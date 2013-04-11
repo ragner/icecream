@@ -66,14 +66,28 @@ add_file ()
            done
         fi
     elif test "$is_darwin" = 1; then
-          for lib in `otool -L "$path" | sed -n 's,^[^/]*\(/[^ ]*\).*,\1,p'`; do
-	    test -f "$lib" || continue
-	    # Check wether the same library also exists in the parent directory,
-	    # and prefer that on the assumption that it is a more generic one.
-	    local baselib=`echo "$lib" | sed 's,\(/[^/]*\)/.*\(/[^/]*\)$,\1\2,'`
-	    test -f "$baselib" && lib=$baselib
-            add_file "$lib"
-         done
+       # this regexp parse the outputs like:
+       # $ otool -L /usr/llvm-gcc-4.2/libexec/gcc/i686-apple-darwin11/4.2.1/cc1
+       #         @executable_path/libllvmgcc.dylib
+       #         /usr/lib/libiconv.2.dylib
+       #         /usr/lib/libSystem.B.dylib
+       #         /usr/lib/libstdc++.6.dylib
+       for lib in `otool -L "$path" | sed -n 's,^[^/@]*\([/@][^ ]*\).*,\1,p'`; do
+         if test ${lib%%/*} = "@executable_path"; then
+           # Installs libs like @executable_path/libllvmgcc.dylib in `dirname ${name}`
+           local libinstall="${name%/*}${lib#@executable_path}"
+           lib="${path%/*}${lib#@executable_path}"
+           test -f "$lib" || continue
+           add_file "$lib" "$libinstall"
+         else
+           test -f "$lib" || continue
+           # Check wether the same library also exists in the parent directory,
+           # and prefer that on the assumption that it is a more generic one.
+           local baselib=`echo "$lib" | sed 's,\(/[^/]*\)/.*\(/[^/]*\)$,\1\2,'`
+           test -f "$baselib" && lib=$baselib
+           add_file "$lib"
+         fi
+      done
     fi
   fi
 }
@@ -221,7 +235,8 @@ done
 tempdir=`mktemp -d /tmp/iceccenvXXXXXX`
 
 # for testing the environment is usable at all
-add_file /bin/true
+test -x /bin/true && add_file /bin/true \
+    || test -x /usr/bin/true && add_file /usr/bin/true /bin/true
 
 if test -n "$gcc"; then
     # getting compilers abs path
@@ -284,20 +299,22 @@ if test "$is_darwin" = 1; then
     add_file /usr/bin/$real_file
     real_file=`/usr/bin/g++ --version | head -n 1 2>&1 | cut -d" " -f1`
     add_file /usr/bin/$real_file
-    real_file=`/usr/bin/as -micha -- < /dev/null 2>&1 | cut -d: -f1`
-    add_file $real_file
+    real_file=`/usr/bin/as -V -- < /dev/null 2>&1 | sed -n 's,^[^/]*\(/[^ ]*\).*,\1,p'`
+    add_file $(abs_path "$real_file")
 fi
 
 # for ldconfig -r to work, ld.so.conf must not contain relative paths
 # in include directives. Make them absolute.
-tmp_ld_so_conf=`mktemp /tmp/icecc_ld_so_confXXXXXX`
-while read directive path; do
-  if [ "$directive" = "include" -a "${path:0:1}" != "/" ]; then
-    path="/etc/$path"
-  fi
-  echo "$directive $path"
-done </etc/ld.so.conf >$tmp_ld_so_conf
-add_file $tmp_ld_so_conf /etc/ld.so.conf
+if test -f /etc/ld.so.conf; then
+  tmp_ld_so_conf=`mktemp /tmp/icecc_ld_so_confXXXXXX`
+  while read directive path; do
+    if [ "$directive" = "include" -a "${path:0:1}" != "/" ]; then
+      path="/etc/$path"
+    fi
+    echo "$directive $path"
+  done </etc/ld.so.conf >$tmp_ld_so_conf
+  add_file $tmp_ld_so_conf /etc/ld.so.conf
+fi
 
 # special case for weird multilib setups
 for dir in /lib /lib64 /usr/lib /usr/lib64; do
