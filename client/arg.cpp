@@ -334,6 +334,7 @@ bool analyse_argv(const char * const *argv, CompileJob &job, bool icerun, list<s
                        || str_equal("-MF", a)
                        || str_equal("-MT", a)
                        || str_equal("-MQ", a)
+                       || str_equal("-arch", a)
                        || str_equal("-imacros", a)
                        || str_equal("-iprefix", a)
                        || str_equal("-iwithprefix", a)
@@ -342,7 +343,8 @@ bool analyse_argv(const char * const *argv, CompileJob &job, bool icerun, list<s
                        || str_equal("-imultilib", a)
                        || str_equal("-isysroot", a)
                        || str_equal("-iwithprefixbefore", a)
-                       || str_equal("-idirafter", a)) {
+                       || str_equal("-idirafter", a)
+                       || str_equal("--serialize-diagnostics", a)) {
                 args.append(a, Arg_Local);
 
                 /* skip next word, being option argument */
@@ -361,6 +363,7 @@ bool analyse_argv(const char * const *argv, CompileJob &job, bool icerun, list<s
                 args.append(a, Arg_Cpp);
             } else if (str_startswith("-I", a)
                        || str_startswith("-l", a)
+                       || str_startswith("-F", a)
                        || str_startswith("-L", a)) {
                 args.append(a, Arg_Local);
             } else if (str_equal("-undef", a)) {
