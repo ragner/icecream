@@ -1,0 +1,274 @@
+#! /usr/bin/env bash
+# Copyright (C) 2013 Ragner Magalhaes <ragner.magalhaes@gmail.com>
+
+# Dependence icecc > 1.0
+
+usage()
+{
+    ERR_MSG=$1
+
+    echo "Usage: icecc-create-android-env -t <aosp_arm> -a <android> -p </toolchain/bin/arm-linux-androideabi-> -v <4.x> [options]"
+    echo "   $ERR_MSG"
+    echo "Options:"
+    echo "   -a|--android <android>                  Path to android source tree."
+    echo "   -p|--tools-prefix <toolchain prefix>    Target tools prefix."
+    echo "   -v|--compiler-version <gcc version>     Target gcc version."
+    echo "   -t|--target <target build>              Android target compatible with toolchain prefix"
+    echo "   -e|--icecc-create-env <script path>     icecc-create-env script used."
+    echo "   -h|--help                               help usage."
+
+    exit 1
+}
+
+abs_path()
+{
+    local path=$1
+    if test -f "$path"; then
+        pushd $(dirname $path) >> /dev/null
+        path=$PWD/$(basename $path)
+    elif test -d "$path"; then
+        pushd $path >> /dev/null
+        path=$PWD
+    fi
+    popd >> /dev/null
+    echo $path
+}
+
+parse_options()
+{
+    while true; do
+        OPT="$1"
+        case "$1" in
+            -a|--android)
+                shift;
+                test ! -e "$1/build/envsetup.sh" && usage "Invalid android source $1 to $OPT option!"
+                ARG_ANDROID_PATH=$(abs_path "$1")
+                ;;
+            -p|--tools-prefix)
+                shift;
+                test ! -x "$1gcc" && usage "Invalid target tools prefix $1 to $OPT option!"
+                ARG_TARGET_TOOLS_PREFIX="$1"
+                ;;
+             -v|--compiler-version)
+                shift;
+                test -z "$1" && usage "Invalid target gcc version $1 to $OPT option!"
+                ARG_TARGET_GCC_VERSION="$1"
+                ;;
+             -t|--target)
+                shift;
+                test -z "$1" && usage "Invalid target $1 to $OPT option!"
+                ARG_TARGET_LABEL="$1"
+                ;;
+             -e|--icecc-create-env)
+                shift;
+                test ! -x "$1" && usage "Invalid icecc-create-env script $1 to $OPT option!"
+                ARG_ICECC_CREATE_ENV="$1"
+                ;;
+            -h|--help)
+                usage
+                ;;
+            *)
+                test -n "$1" && usage "Invalid option $OPT"
+                break;
+                ;;
+        esac
+        shift;
+    done
+}
+
+icecc_prog=$(which icecc)
+test ! -x "$icecc_prog" && echo "icecc command not found in the PATH!" && exit 1
+
+ARG_ICECC_CREATE_ENV=/usr/libexec/icecc/icecc-create-env
+test ! -x "$ARG_ICECC_CREATE_ENV" && ARG_ICECC_CREATE_ENV=$(which icecc-create-env)
+
+ARG_ANDROID_PATH=
+ARG_TARGET_TOOLS_PREFIX=
+ARG_TARGET_GCC_VERSION=
+ARG_TARGET_LABEL=
+
+parse_options $@
+
+test -z "${ARG_ANDROID_PATH}" && usage "Android source option not defined!"
+test -z "${ARG_TARGET_TOOLS_PREFIX}" && usage "Target tools prefix option not defined!"
+test -z "${ARG_TARGET_GCC_VERSION}" && usage "Target gcc version not defined!"
+test -z "${ARG_TARGET_LABEL}" && usage "Android target not defined!"
+test ! -x "${ARG_ICECC_CREATE_ENV}" && usage "icecc-create-env script not found in the PATH!"
+
+HOST_32_PREFIX=i686-linux-
+HOST_64_PREFIX=x86_64-linux-
+TARGET_PREFIX=$(basename ${ARG_TARGET_TOOLS_PREFIX})
+
+
+HOST_32_PATH_BIN=$(dirname \
+    $(find ${ARG_ANDROID_PATH}/prebuilts/gcc/linux-x86/host/ -name ${HOST_32_PREFIX}gcc \
+    | sort  | tail -n 1))
+
+HOST_64_PATH_BIN=$(dirname \
+    $(find ${ARG_ANDROID_PATH}/prebuilts/gcc/linux-x86/host/ -name ${HOST_64_PREFIX}gcc \
+    | sort  | tail -n 1))
+
+# TOOLCHAINS USED ON ANDROID BUILD
+TOOLCHAINS_PREFIX_LIST="
+    ${HOST_32_PATH_BIN}/${HOST_32_PREFIX}
+    ${HOST_64_PATH_BIN}/${HOST_64_PREFIX}
+    ${ARG_TARGET_TOOLS_PREFIX}
+    ${ARG_ANDROID_PATH}/prebuilts/gcc/linux-x86/arm/arm-eabi-${ARG_TARGET_GCC_VERSION}/bin/arm-eabi-"
+
+ICECC_SHARE="${HOME}/.local/share/icecc/${ARG_TARGET_LABEL}"
+ICECC_TOOLCHAINS_PATH="${ICECC_SHARE}/bin"
+ICECC_ANDROID_ENV="${ICECC_SHARE}/icecc-android-env"
+
+rm -rf $ICECC_SHARE
+mkdir -p $ICECC_SHARE/bin
+
+tempfd=$(mktemp -t iceccfdXXXX)
+create_env=${ARG_ICECC_CREATE_ENV}
+
+# CREATE icecc environment tarball for each toolchain
+
+for toolchain_prefix in ${TOOLCHAINS_PREFIX_LIST}
+do
+    if ! test -x "${toolchain_prefix}gcc" || ! test -x "${toolchain_prefix}g++"; then
+        echo "Invalid toolchain prefix: ${toolchain_prefix}"
+        exit 1
+    fi
+
+    $create_env --gcc "${toolchain_prefix}gcc" "${toolchain_prefix}g++" 5>$tempfd
+
+    tarball=$(cat $tempfd)
+    tarball_prefix=$(basename ${toolchain_prefix})
+
+    toolchain_tarball=$ICECC_SHARE/${tarball_prefix}${tarball}
+
+    if test -f "$tarball"; then
+        mv "$tarball" "$toolchain_tarball"
+    else
+        echo "Failed to create icecc tarball environment to ${toolchain_prefix}"
+        rm -f $tempfd
+        exit 1
+    fi
+
+    pushd $ICECC_SHARE/bin >> /dev/null
+
+    for c in ${toolchain_prefix}* ; do
+        ln -sf $c
+    done
+
+    ln -sf $icecc_prog ${tarball_prefix}gcc
+    ln -sf $icecc_prog ${tarball_prefix}g++
+
+    popd >> /dev/null
+
+    ICECC_TOOLCHAINS_PATH+=":$(dirname ${toolchain_prefix})"
+done
+
+rm -f $tempfd
+
+# CREATE gcc bin to replace gcc script from
+# android/prebuilts/tools/gcc-sdk/gcc
+
+PATH_LEN=$(($(echo ${ICECC_SHARE} | wc -c) + 50))
+
+cat << EOF | gcc -x c - -o $ICECC_SHARE/bin/gcc
+#include <string.h>
+#include <unistd.h>
+#include <stdlib.h>
+
+int main (int argc, char **argv)
+{
+	int c;
+	unsigned short is32bits = 0;
+	char *progname = strrchr(argv[0], '/');
+	char program32[$PATH_LEN] = "$ICECC_SHARE/bin/${HOST_32_PREFIX}";
+	char program64[$PATH_LEN] = "$ICECC_SHARE/bin/${HOST_64_PREFIX}";
+	char **args = malloc(sizeof(char*) * (argc + 1));
+	int i;
+
+	if (!progname)
+		progname = argv[0];
+	else
+		progname += 1;
+
+	opterr = 0;
+
+	for (i = 1; i < argc; i++)
+		args[i] = argv[i];
+	args[i] = NULL;
+
+	while ((c = getopt(argc, argv, "m:")) != -1) {
+		if (c != 'm' || !optarg)
+			continue;
+
+		if (!strcmp(optarg, "64"))
+			is32bits = 0;
+		else if (!strcmp(optarg, "32"))
+			is32bits = 1;
+	}
+
+	if (is32bits) {
+		strcat(program32, progname);
+		args[0] = program32;
+	} else {
+		strcat(program64, progname);
+		args[0] = program64;
+	}
+
+	execv(args[0], args);
+	perror("execve");
+	return (EXIT_FAILURE);
+}
+
+EOF
+
+for cmd in addr2line ar as c++ c++filt cpp elfedit g++ gcov gprof ld nm objcopy objdump ranlib readelf size strings strip
+do
+    ln -s $ICECC_SHARE/bin/gcc $ICECC_SHARE/bin/$cmd
+done
+
+# CREATE EXPORTs
+
+cat>"${ICECC_ANDROID_ENV}" <<EOF
+#!/bin/bash
+
+tmpath=\$(echo \$PATH | cut -d: -f1)
+
+if test "\$tmpath" != "$ICECC_TOOLCHAINS_PATH"; then
+    PATH=$ICECC_TOOLCHAINS_PATH:\$PATH
+else
+    echo "Android envs already done!"
+    return 0
+fi
+
+for tgz in $ICECC_SHARE/*.gz
+do
+    prefix=\$(basename \${tgz%-*})
+
+    if test -n "\$ICECC_VERSION"; then
+        ICECC_VERSION+=",\${tgz}=\${prefix}"
+    else
+        ICECC_VERSION="\${tgz}=\${prefix}"
+    fi
+done
+
+export ICECC_ANDROID_TOOLCHAINS="$ICECC_SHARE"
+export ICECC_VERSION PATH
+EOF
+
+chmod +x "${ICECC_ANDROID_ENV}"
+
+# TIPs
+
+echo -e "\n ======================================================= \n"
+
+echo -e "\n # To export android's build environment:\n"
+echo -e " $ cd ${ARG_ANDROID_PATH}\n"
+echo -e " $ source ${ICECC_ANDROID_ENV}\n"
+echo -e " $ source build/envsetup.sh"
+
+echo -e "\n # Build:\n"
+echo -e " $ make TARGET_PRODUCT=$ARG_TARGET_LABEL TARGET_TOOLS_PREFIX=${ICECC_SHARE}/bin/${TARGET_PREFIX} HOST_TOOLCHAIN_PREFIX=${ICECC_SHARE}/bin  -j 40"
+
+echo -e "\n ======================================================= \n"
+
+exit 0
