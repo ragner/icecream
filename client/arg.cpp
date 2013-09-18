@@ -252,12 +252,23 @@ bool analyse_argv(const char * const *argv, CompileJob &job, bool icerun, list<s
 #endif
                 always_local = true;
                 args.append(a, Arg_Local);
-            } else if (!strcmp(a, "-x")) {
+            } else if (str_equal(a, "-x")) {
 #if CLIENT_DEBUG
                 log_info() << "gcc's -x handling is complex; running locally" << endl;
 #endif
-                always_local = true;
                 args.append(a, Arg_Local);
+
+                if (argv[i + 1]) {
+                    ++i;
+                    args.append(argv[i], Arg_Local);
+
+                    if (str_equal(argv[i], "c"))
+                        job.setLanguage(CompileJob::Lang_C);
+                    else if (str_equal(argv[i], "c++"))
+                        job.setLanguage(CompileJob::Lang_CXX);
+                    else
+                        always_local = true;
+                }
             } else if (!strcmp(a, "-march=native") || !strcmp(a, "-mcpu=native")
                        || !strcmp(a, "-mtune=native")) {
 #if CLIENT_DEBUG
